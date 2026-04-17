@@ -1,0 +1,15 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Environment / secrets
+.env
+.venv/
+.vscode/
+
+# Local data (persisted elsewhere)
+state.json
+users.json
+
+# OS clutter
+.DS_Store

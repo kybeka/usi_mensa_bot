@@ -1,0 +1,48 @@
+name: Send channel menu
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run once per day on weekdays; 08:00 and 09:00 UTC cover 10:00 Europe/Zurich across DST.
+    - cron: '0 8 * * 1-5'
+    - cron: '0 9 * * 1-5'
+
+jobs:
+  send-channel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright browser
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Send channel menu
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TIMEZONE: Europe/Zurich
+          SEND_HOUR_LOCAL: 10
+        run: python channel_job.py
