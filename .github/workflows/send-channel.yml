@@ -3,9 +3,9 @@ name: Send channel menu
 on:
   workflow_dispatch:
   schedule:
-    # Run once per day on weekdays; 08:00 and 09:00 UTC cover 10:00 Europe/Zurich across DST.
+    # 08:00 UTC = 10:00 CEST / 09:00 CET; single entry avoids double-sends.
+    # Python-side gate accepts a wide window to absorb GitHub scheduler delays.
     - cron: '0 8 * * 1-5'
-    - cron: '0 9 * * 1-5'
 
 jobs:
   send-channel:
