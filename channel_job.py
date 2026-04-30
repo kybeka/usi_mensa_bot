@@ -11,7 +11,9 @@ from menu_fetcher import (
     ScrapeMeta,
     escape_html,
     format_day_menu,
+    format_day_menu_discord,
     format_week_menu,
+    format_week_menu_discord,
     get_day_menus_with_meta,
     get_day_menu_with_meta,
     has_any_menu_cards,
@@ -20,6 +22,7 @@ from menu_fetcher import (
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 TIMEZONE = os.getenv('TIMEZONE', 'Europe/Zurich')
 GITHUB_EVENT_NAME = os.getenv('GITHUB_EVENT_NAME', '').strip()
 SEND_HOUR_LOCAL = int(os.getenv('SEND_HOUR_LOCAL', '10'))
@@ -59,6 +62,18 @@ def get_day_menu_with_retry(target_date: date, menu_url: str):
     raise RuntimeError(f'Failed to fetch menu after {FETCH_RETRIES} attempts: {last_exc}')
 
 
+def discord_webhook_send(payload: dict) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        raise RuntimeError('Missing DISCORD_WEBHOOK_URL.')
+    response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=45)
+    if response.status_code not in (200, 204):
+        try:
+            detail = response.json()
+        except Exception:
+            detail = response.text
+        raise RuntimeError(f'Discord webhook HTTP {response.status_code}: {detail}')
+
+
 def build_fallback_message(hall_name: str, target_date: date, menu_url: str, reason: str) -> str:
     header = (
         f"🍽️ <b>{escape_html(hall_name)} — "
@@ -66,6 +81,17 @@ def build_fallback_message(hall_name: str, target_date: date, menu_url: str, rea
         f"<a href=\"{menu_url}\">Open menu page</a>"
     )
     return header + f"\n\nAutomatic parsing failed ({escape_html(reason)}). Please check the official menu page."
+
+
+def build_fallback_discord(hall_name: str, target_date: date, menu_url: str, reason: str) -> dict:
+    return {
+        "embeds": [{
+            "title": f"🍽️ {hall_name} — {target_date.strftime('%A, %d %b %Y')}",
+            "url": menu_url,
+            "description": f"Automatic parsing failed ({reason}). Please check the [official menu page]({menu_url}).",
+            "color": 0xF4830A,
+        }]
+    }
 
 
 def decide_message_type(menu_cards_count: int, meta: ScrapeMeta) -> str:
@@ -78,11 +104,10 @@ def decide_message_type(menu_cards_count: int, meta: ScrapeMeta) -> str:
     return 'fallback_parse_failure'
 
 
-def build_week_preview_message(today: date, today_menu: DayMenu, menu_url: str) -> str | None:
+def fetch_week_day_menus(today: date, today_menu: DayMenu, menu_url: str) -> list[DayMenu] | None:
     week_dates = remaining_weekdays(today)
     if not week_dates:
         return None
-
     day_menus = [today_menu]
     remaining_dates = week_dates[1:]
     try:
@@ -91,22 +116,21 @@ def build_week_preview_message(today: date, today_menu: DayMenu, menu_url: str) 
         print(f"WARN: Could not fetch weekly preview batch error={exc}")
         day_menus.extend(
             DayMenu(
-                target_date=target_date.isoformat(),
-                weekday_name=target_date.strftime('%A'),
+                target_date=d.isoformat(),
+                weekday_name=d.strftime('%A'),
                 cards=[],
                 raw_section=[],
             )
-            for target_date in remaining_dates
+            for d in remaining_dates
         )
-
-    if not has_any_menu_cards(day_menus):
-        return None
-    return format_week_menu(day_menus, menu_url)
+    return day_menus if has_any_menu_cards(day_menus) else None
 
 
 def main() -> int:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError('TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required for channel job.')
+    use_telegram = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+    use_discord = bool(DISCORD_WEBHOOK_URL)
+    if not use_telegram and not use_discord:
+        raise RuntimeError('Configure TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID and/or DISCORD_WEBHOOK_URL.')
 
     now_local = datetime.now(ZoneInfo(TIMEZONE))
     today = now_local.date()
@@ -122,18 +146,20 @@ def main() -> int:
     # Menus are identical across campuses; send one combined message.
     campuses_display = " / ".join(get_display_name(key) for key in CAMPUS_INFO.keys())
     menu_url = get_menu_url(DEFAULT_CAMPUS)
-    print(f"JOB target_date={today.isoformat()} menu_url={menu_url}")
+    print(f"JOB target_date={today.isoformat()} menu_url={menu_url} telegram={use_telegram} discord={use_discord}")
     try:
         menu, meta = get_day_menu_with_retry(today, menu_url)
     except Exception as exc:
-        text = build_fallback_message(campuses_display, today, menu_url, reason='fetch_error')
         print(f"OUTCOME type=fallback_fetch_error target_date={today.isoformat()} error={exc}")
-        telegram_api('sendMessage', json_body={
-            'chat_id': str(TELEGRAM_CHAT_ID),
-            'text': text,
-            'parse_mode': 'HTML',
-            'disable_web_page_preview': True,
-        })
+        if use_telegram:
+            telegram_api('sendMessage', json_body={
+                'chat_id': str(TELEGRAM_CHAT_ID),
+                'text': build_fallback_message(campuses_display, today, menu_url, reason='fetch_error'),
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': True,
+            })
+        if use_discord:
+            discord_webhook_send(build_fallback_discord(campuses_display, today, menu_url, reason='fetch_error'))
         return 0
 
     message_type = decide_message_type(len(menu.cards), meta)
@@ -141,31 +167,39 @@ def main() -> int:
         print(f"OUTCOME type=skip_no_menu target_date={today.isoformat()} parsed_cards={len(menu.cards)} section_extracted={meta.section_extracted}")
         return 0
 
+    label = today.strftime('%A')
     if message_type == 'fallback_parse_failure':
-        text = build_fallback_message(campuses_display, today, menu_url, reason='parse_error')
+        tg_text = build_fallback_message(campuses_display, today, menu_url, reason='parse_error')
+        dc_payload = build_fallback_discord(campuses_display, today, menu_url, reason='parse_error')
     else:
-        label = today.strftime('%A')
-        text = format_day_menu(menu, label, menu_url, hall_name=campuses_display)
+        tg_text = format_day_menu(menu, label, menu_url, hall_name=campuses_display)
+        dc_payload = format_day_menu_discord(menu, label, menu_url, hall_name=campuses_display)
 
     if today.weekday() == 0 and message_type == 'real':
-        weekly_text = build_week_preview_message(today, menu, menu_url)
-        if weekly_text:
-            telegram_api('sendMessage', json_body={
-                'chat_id': str(TELEGRAM_CHAT_ID),
-                'text': weekly_text,
-                'parse_mode': 'HTML',
-                'disable_web_page_preview': True,
-            })
+        week_day_menus = fetch_week_day_menus(today, menu, menu_url)
+        if week_day_menus:
+            if use_telegram:
+                telegram_api('sendMessage', json_body={
+                    'chat_id': str(TELEGRAM_CHAT_ID),
+                    'text': format_week_menu(week_day_menus, menu_url),
+                    'parse_mode': 'HTML',
+                    'disable_web_page_preview': True,
+                })
+            if use_discord:
+                discord_webhook_send(format_week_menu_discord(week_day_menus, menu_url))
             print(f"OUTCOME type=weekly_preview target_date={today.isoformat()}")
         else:
             print(f"OUTCOME type=skip_weekly_preview target_date={today.isoformat()}")
 
-    telegram_api('sendMessage', json_body={
-        'chat_id': str(TELEGRAM_CHAT_ID),
-        'text': text,
-        'parse_mode': 'HTML',
-        'disable_web_page_preview': True,
-    })
+    if use_telegram:
+        telegram_api('sendMessage', json_body={
+            'chat_id': str(TELEGRAM_CHAT_ID),
+            'text': tg_text,
+            'parse_mode': 'HTML',
+            'disable_web_page_preview': True,
+        })
+    if use_discord:
+        discord_webhook_send(dc_payload)
     print(f"OUTCOME type={message_type} target_date={today.isoformat()} parsed_cards={len(menu.cards)}")
     return 0
 
