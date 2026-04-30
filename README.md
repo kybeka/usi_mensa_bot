@@ -1,17 +1,18 @@
 <p align="center">
-  <img src="img/tg_bot_pfp.png" alt="USI Mensa Telegram Bot avatar" width="200">
+  <img src="img/tg_bot_pfp.png" alt="USI Mensa Bot avatar" width="200">
 </p>
 
-# USI Mensa Telegram Bot
+# USI Mensa Bot
 
 [![Send channel menu](https://github.com/kybeka/usi_campus_menu_bot/actions/workflows/send-channel.yml/badge.svg)](https://github.com/kybeka/usi_campus_menu_bot/actions/workflows/send-channel.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![Playwright](https://img.shields.io/badge/scraper-Playwright-2ea44f)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Telegram](https://img.shields.io/badge/Telegram-@usi__mensa-26A5E4?logo=telegram&logoColor=white)](https://t.me/usi_mensa)
+![Discord](https://img.shields.io/badge/Discord-webhook-5865F2?logo=discord&logoColor=white)
 ![Vibe-coded](https://img.shields.io/badge/vibe--coded-yes-ff69b4)
 
-Posts the daily USI mensa menu to [@usi_mensa](https://t.me/usi_mensa) around 10:00 Europe/Zurich.
+Posts the daily USI mensa menu to [@usi_mensa](https://t.me/usi_mensa) on Telegram and/or to a Discord channel via webhook, around 10:00 Europe/Zurich.
 
 Menus are currently treated as identical across the configured campuses, so the bot sends one combined channel message. On Mondays, it first sends a week-at-a-glance preview for Monday-Friday, marked as tentative because the official menu may still change.
 
@@ -30,7 +31,15 @@ This project is unofficial and was created independently. It is not affiliated w
 - Falls back to the official menu link when scraping breaks.
 - Runs from GitHub Actions on a weekday schedule, with a Zurich local-time gate for DST safety.
 
+## Examples
+
+| Telegram | Discord |
+|:---:|:---:|
+| <img src="img/example_telegram.png" width="340"> | <img src="img/example_discord.png" width="340"> |
+
 ## Example Weekly Preview
+
+Sent on Mondays before the daily message, on both Telegram and Discord (as a code block).
 
 ```text
 USI Mensa - Week at a glance
@@ -85,12 +94,29 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium
+```
 
+At least one platform must be configured. Set only the credentials you need — the other platform is silently skipped.
+
+Telegram only:
+```bash
 TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... TIMEZONE=Europe/Zurich \
 python channel_job.py
 ```
 
-Manual local runs will send to whichever platforms have valid credentials set.
+Discord only:
+```bash
+DISCORD_WEBHOOK_URL=... TIMEZONE=Europe/Zurich \
+python channel_job.py
+```
+
+Both at once:
+```bash
+TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... DISCORD_WEBHOOK_URL=... TIMEZONE=Europe/Zurich \
+python channel_job.py
+```
+
+Add `GITHUB_EVENT_NAME=workflow_dispatch` to bypass the local-time gate during testing.
 
 ## Deployment
 
@@ -98,8 +124,12 @@ At least one of Telegram or Discord must be configured. Both can be active at th
 
 ### Telegram
 
+Just join [@usi_mensa](https://t.me/usi_mensa) on Telegram — no setup needed.
+
+If you're forking this repo for your own channel:
 1. Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as GitHub Actions secrets.
 2. Make sure the Telegram bot is allowed to post in the target channel.
+3. See the [Telegram Bot documentation](https://core.telegram.org/bots#how-do-i-create-a-bot) for creating a bot and obtaining its token and your channel's chat ID.
 
 ### Discord
 
@@ -122,7 +152,7 @@ Edit [campus.py](campus.py) to add, remove, or rename campuses. The current chan
 ## Public Repo Notes
 
 - Do not commit `.env`; it is ignored.
-- Keep all credentials (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL`) in GitHub Actions secrets.
+- Keep all credentials (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL`) in GitHub Actions secrets. The Discord webhook URL is a full secret — anyone with it can post to your channel, so treat it like a password and regenerate it if accidentally exposed.
 - The scraper depends on the live SV Gastronomie website. If the site changes its tab markup or text structure, the scrape may need adjustment.
 
 ## License

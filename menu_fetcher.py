@@ -446,10 +446,14 @@ DISCORD_EMBED_COLOR = 0xF4830A
 
 
 def format_card_discord(card: MenuCard) -> dict:
-    name = f"{category_emoji(card.category)} {card.category}"
+    # Field names are rendered bold natively in Discord embeds, so no markdown needed.
+    # Putting category + title in the name avoids markdown conflicts in the value.
+    emoji = category_emoji(card.category)
+    if card.title and card.title != card.category:
+        name = f"{emoji} {card.category} — {card.title}"
+    else:
+        name = f"{emoji} {card.category}"
     lines = []
-    if card.title:
-        lines.append(f"**{card.title}**")
     if card.description:
         lines.append(f"*{card.description}*")
     prices = []

@@ -94,8 +94,13 @@ def build_fallback_discord(hall_name: str, target_date: date, menu_url: str, rea
     }
 
 
-def decide_message_type(menu_cards_count: int, meta: ScrapeMeta) -> str:
-    if menu_cards_count > 0:
+HOLIDAY_TITLES = {'festa', 'chiuso', 'geschlossen', 'feiertag', 'holiday', 'closed', 'ferie'}
+
+
+def decide_message_type(cards: list, meta: ScrapeMeta) -> str:
+    if cards:
+        if all(card.title.lower() in HOLIDAY_TITLES for card in cards):
+            return 'skip_holiday'
         return 'real'
     # If no section was found at all, treat as closed/holiday/no-menu day.
     if not meta.section_extracted:
@@ -162,9 +167,9 @@ def main() -> int:
             discord_webhook_send(build_fallback_discord(campuses_display, today, menu_url, reason='fetch_error'))
         return 0
 
-    message_type = decide_message_type(len(menu.cards), meta)
-    if message_type == 'skip_no_menu':
-        print(f"OUTCOME type=skip_no_menu target_date={today.isoformat()} parsed_cards={len(menu.cards)} section_extracted={meta.section_extracted}")
+    message_type = decide_message_type(menu.cards, meta)
+    if message_type in ('skip_no_menu', 'skip_holiday'):
+        print(f"OUTCOME type={message_type} target_date={today.isoformat()} parsed_cards={len(menu.cards)} section_extracted={meta.section_extracted}")
         return 0
 
     label = today.strftime('%A')
