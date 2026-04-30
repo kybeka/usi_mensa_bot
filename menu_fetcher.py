@@ -440,3 +440,62 @@ def format_matches(matches: list[MenuCard]) -> str:
         return ''
     lines = [f"⭐ {category_emoji(card.category)} {escape_html(card.title or card.category)}" for card in matches]
     return '\n'.join(lines)
+
+
+DISCORD_EMBED_COLOR = 0xF4830A
+
+
+def format_card_discord(card: MenuCard) -> dict:
+    # Field names are rendered bold natively in Discord embeds, so no markdown needed.
+    # Putting category + title in the name avoids markdown conflicts in the value.
+    emoji = category_emoji(card.category)
+    if card.title and card.title != card.category:
+        name = f"{emoji} {card.category} — {card.title}"
+    else:
+        name = f"{emoji} {card.category}"
+    lines = []
+    if card.description:
+        lines.append(f"*{card.description}*")
+    prices = []
+    if card.student_price:
+        prices.append(f"Student CHF {card.student_price}")
+    if card.staff_price:
+        prices.append(f"Staff CHF {card.staff_price}")
+    if card.external_price:
+        prices.append(f"External CHF {card.external_price}")
+    if prices:
+        lines.append("💸 " + " • ".join(prices))
+    return {"name": name, "value": "\n".join(lines) or "—", "inline": False}
+
+
+def format_day_menu_discord(day_menu: DayMenu, label: str, menu_url: str = DEFAULT_MENU_URL, hall_name: str = "USI Mensa") -> dict:
+    full_label = label
+    try:
+        d = date.fromisoformat(day_menu.target_date)
+        full_label = f"{label}, {d.day} {d.strftime('%b %Y')}"
+    except Exception:
+        pass
+    embed: dict = {
+        "title": f"🍽️ {hall_name} — {full_label}",
+        "url": menu_url,
+        "color": DISCORD_EMBED_COLOR,
+    }
+    if day_menu.cards:
+        embed["fields"] = [format_card_discord(card) for card in day_menu.cards]
+    else:
+        embed["description"] = "No clean menu items were found for this day."
+    return {"embeds": [embed]}
+
+
+def format_week_menu_discord(day_menus: list[DayMenu], menu_url: str = DEFAULT_MENU_URL) -> dict:
+    table = ["Day        Menu", "---------- ------------------------------------------------------------"]
+    for day_menu in day_menus:
+        lbl = datetime.fromisoformat(day_menu.target_date).strftime("%a %d %b")
+        summary = "; ".join(summarize_card_for_week(c) for c in day_menu.cards) if day_menu.cards else "No menu found"
+        table.append(f"{lbl:<10} {summary}")
+    content = (
+        f"🗓️ **USI Mensa — Week at a glance**\n"
+        f"*Tentative, may change. [Open menu page]({menu_url})*\n"
+        "```\n" + "\n".join(table) + "\n```"
+    )
+    return {"content": content}
