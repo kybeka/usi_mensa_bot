@@ -1,7 +1,7 @@
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
@@ -50,6 +50,7 @@ class MenuCard:
     student_price: str = ''
     staff_price: str = ''
     external_price: str = ''
+    dietary_labels: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -155,16 +156,58 @@ def prepare_menu_page(page, menu_url: str) -> None:
         pass
 
 
-def fetch_body_text_from_loaded_page(page, d: date) -> tuple[str, str, bool]:
+def _normalize_dietary_label(label: str) -> str:
+    lower = label.lower()
+    if 'vegan' in lower:
+        return 'vegan'
+    if 'vegetar' in lower:
+        return 'vegetarian'
+    return lower
+
+
+def fetch_dietary_mapping_from_page(page) -> dict[str, list[str]]:
+    """Query the rendered DOM for dietary icons (img alt text) inside .allergen-column.
+    Returns a mapping of dish title → list of normalized label strings ('vegan'/'vegetarian').
+    Fails silently — returns {} if the DOM structure doesn't match or JS evaluation fails.
+    """
+    try:
+        raw: dict = page.evaluate("""
+            () => {
+                const result = {};
+                for (const col of document.querySelectorAll('.allergen-column')) {
+                    const labels = [];
+                    for (const img of col.querySelectorAll('img')) {
+                        const label = (img.getAttribute('alt') || img.getAttribute('title') || '').trim();
+                        const lower = label.toLowerCase();
+                        if (lower.includes('vegan') || lower.includes('vegetar')) {
+                            labels.push(label);
+                        }
+                    }
+                    if (!labels.length) continue;
+                    const nameCol = col.parentElement && col.parentElement.querySelector('.name-column');
+                    if (!nameCol) continue;
+                    const title = (nameCol.innerText || nameCol.textContent || '').trim().split('\\n')[0].trim();
+                    if (title) result[title] = labels;
+                }
+                return result;
+            }
+        """) or {}
+        return {k: [_normalize_dietary_label(l) for l in v] for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
+def fetch_body_text_from_loaded_page(page, d: date) -> tuple[str, str, bool, dict[str, list[str]]]:
     tab_click_succeeded = click_day(page, d)
     title = page.title()
     if DEBUG_SCREENSHOT:
         page.screenshot(path=f'debug-{target_label(d).replace(".", "_")}.png', full_page=True)
     body_text = page.locator('body').inner_text(timeout=15000)
-    return title, body_text, tab_click_succeeded
+    dietary_mapping = fetch_dietary_mapping_from_page(page)
+    return title, body_text, tab_click_succeeded, dietary_mapping
 
 
-def fetch_body_text_for_date(d: date, menu_url: str = DEFAULT_MENU_URL) -> tuple[str, str, bool]:
+def fetch_body_text_for_date(d: date, menu_url: str = DEFAULT_MENU_URL) -> tuple[str, str, bool, dict[str, list[str]]]:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
         page = browser.new_page(locale='it-CH', timezone_id=TIMEZONE)
@@ -195,7 +238,10 @@ def extract_day_section(lines: list[str], d: date) -> list[str]:
     return section
 
 
-def parse_cards_from_section(section: list[str]) -> list[MenuCard]:
+def parse_cards_from_section(
+    section: list[str],
+    dietary_mapping: dict[str, list[str]] | None = None,
+) -> list[MenuCard]:
     if not section:
         return []
     groups: list[dict] = []
@@ -213,6 +259,7 @@ def parse_cards_from_section(section: list[str]) -> list[MenuCard]:
     if current['lines']:
         groups.append(current)
 
+    mapping = dietary_mapping or {}
     cards: list[MenuCard] = []
     for group in groups:
         lines = group['lines']
@@ -230,6 +277,7 @@ def parse_cards_from_section(section: list[str]) -> list[MenuCard]:
                 student_price=prices.get('STUD', ''),
                 staff_price=prices.get('DOZ', ''),
                 external_price=prices.get('EXT', ''),
+                dietary_labels=list(mapping.get(title, [])),
             )
         )
     return cards
@@ -241,10 +289,11 @@ def parse_day_menu_from_text(
     title: str,
     body_text: str,
     tab_click_succeeded: bool,
+    dietary_mapping: dict[str, list[str]] | None = None,
 ) -> tuple[DayMenu, ScrapeMeta]:
     lines = normalize_lines(body_text)
     section = extract_day_section(lines, d)
-    cards = parse_cards_from_section(section)
+    cards = parse_cards_from_section(section, dietary_mapping)
     day_menu = DayMenu(
         target_date=d.isoformat(),
         weekday_name=WEEKDAY_DISPLAY[d.weekday()],
@@ -297,8 +346,8 @@ def empty_day_menu_with_meta(d: date, menu_url: str, page_title: str = '') -> tu
 def get_day_menu_with_meta(d: date, menu_url: str = DEFAULT_MENU_URL) -> tuple[DayMenu, ScrapeMeta]:
     # Scrape pipeline: fetch page text -> isolate day section -> parse cards.
     print(f"SCRAPE target_date={d.isoformat()} menu_url={menu_url}")
-    title, body_text, tab_click_succeeded = fetch_body_text_for_date(d, menu_url)
-    day_menu, meta = parse_day_menu_from_text(d, menu_url, title, body_text, tab_click_succeeded)
+    title, body_text, tab_click_succeeded, dietary_mapping = fetch_body_text_for_date(d, menu_url)
+    day_menu, meta = parse_day_menu_from_text(d, menu_url, title, body_text, tab_click_succeeded, dietary_mapping)
     log_scrape_result(meta)
     return day_menu, meta
 
@@ -317,13 +366,14 @@ def get_day_menus_with_meta(dates: list[date], menu_url: str = DEFAULT_MENU_URL)
             for d in dates:
                 print(f"SCRAPE target_date={d.isoformat()} menu_url={menu_url}")
                 try:
-                    title, body_text, tab_click_succeeded = fetch_body_text_from_loaded_page(page, d)
+                    title, body_text, tab_click_succeeded, dietary_mapping = fetch_body_text_from_loaded_page(page, d)
                     day_menu, meta = parse_day_menu_from_text(
                         d,
                         menu_url,
                         title,
                         body_text,
                         tab_click_succeeded,
+                        dietary_mapping,
                     )
                 except Exception as exc:
                     print(f"WARN: Could not scrape date={d.isoformat()} in batch: {exc}")
@@ -355,7 +405,10 @@ def category_emoji(name: str) -> str:
 def format_card(card: MenuCard) -> str:
     parts = [f"{category_emoji(card.category)} <b>{escape_html(card.category)}</b>"]
     if card.title:
-        parts.append(escape_html(card.title))
+        title_line = escape_html(card.title)
+        if card.dietary_labels:
+            title_line += f' <i>({escape_html(", ".join(card.dietary_labels))})</i>'
+        parts.append(title_line)
     if card.description:
         parts.append(f"<i>{escape_html(card.description)}</i>")
     prices = []
@@ -385,28 +438,31 @@ def format_day_menu(day_menu: DayMenu, label: str, menu_url: str = DEFAULT_MENU_
 
 
 def summarize_card_for_week(card: MenuCard) -> str:
+    emoji = category_emoji(card.category)
     label = card.category
     if card.title and card.title != card.category:
         label = f'{card.category}: {card.title}'
-    return re.sub(r'\s+', ' ', label).strip()
+    text = re.sub(r'\s+', ' ', label).strip()
+    if card.dietary_labels:
+        text += f" ({', '.join(card.dietary_labels)})"
+    return f'{emoji} {text}'
 
 
 def format_week_menu(day_menus: list[DayMenu], menu_url: str = DEFAULT_MENU_URL) -> str:
-    parts = [
+    header = (
         f"🗓️ <b>USI Mensa — Week at a glance</b>\n"
-        "<i>Tentative, may change. Check the official menu page for updates.</i>\n"
-        f"<a href=\"{menu_url}\">Open menu page</a>"
-    ]
-    table = ['Day        Menu', '---------- ------------------------------------------------------------']
+        f"<i>Tentative, may change. Check the official menu page for updates.</i>\n"
+        f'<a href="{menu_url}">Open menu page</a>'
+    )
+    day_parts = []
     for day_menu in day_menus:
-        label = datetime.fromisoformat(day_menu.target_date).strftime('%a %d %b')
+        label = escape_html(datetime.fromisoformat(day_menu.target_date).strftime('%a %d %b'))
         if not day_menu.cards:
-            summary = 'No menu found'
+            day_parts.append(f"<b>{label}</b>\n—")
         else:
-            summary = '; '.join(summarize_card_for_week(card) for card in day_menu.cards)
-        table.append(f'{label:<10} {summary}')
-    parts.append('<pre>' + escape_html('\n'.join(table)) + '</pre>')
-    return '\n\n'.join(parts)
+            items = '\n'.join(escape_html(summarize_card_for_week(card)) for card in day_menu.cards)
+            day_parts.append(f"<b>{label}</b>\n{items}")
+    return header + '\n\n' + '\n\n'.join(day_parts)
 
 
 def has_any_menu_cards(day_menus: list[DayMenu]) -> bool:
@@ -453,6 +509,8 @@ def format_card_discord(card: MenuCard) -> dict:
         name = f"{emoji} {card.category} — {card.title}"
     else:
         name = f"{emoji} {card.category}"
+    if card.dietary_labels:
+        name += f" ({', '.join(card.dietary_labels)})"
     lines = []
     if card.description:
         lines.append(f"*{card.description}*")
@@ -488,14 +546,20 @@ def format_day_menu_discord(day_menu: DayMenu, label: str, menu_url: str = DEFAU
 
 
 def format_week_menu_discord(day_menus: list[DayMenu], menu_url: str = DEFAULT_MENU_URL) -> dict:
-    table = ["Day        Menu", "---------- ------------------------------------------------------------"]
+    fields = []
     for day_menu in day_menus:
-        lbl = datetime.fromisoformat(day_menu.target_date).strftime("%a %d %b")
-        summary = "; ".join(summarize_card_for_week(c) for c in day_menu.cards) if day_menu.cards else "No menu found"
-        table.append(f"{lbl:<10} {summary}")
-    content = (
-        f"🗓️ **USI Mensa — Week at a glance**\n"
-        f"*Tentative, may change. [Open menu page]({menu_url})*\n"
-        "```\n" + "\n".join(table) + "\n```"
-    )
-    return {"content": content}
+        label = datetime.fromisoformat(day_menu.target_date).strftime("%a %d %b")
+        if not day_menu.cards:
+            value = "—"
+        else:
+            value = "\n".join(summarize_card_for_week(card) for card in day_menu.cards)
+        fields.append({"name": label, "value": value, "inline": False})
+    return {
+        "embeds": [{
+            "title": "🗓️ USI Mensa — Week at a glance",
+            "url": menu_url,
+            "description": "*Tentative, may change.*",
+            "color": DISCORD_EMBED_COLOR,
+            "fields": fields,
+        }]
+    }
