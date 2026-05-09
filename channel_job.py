@@ -16,7 +16,6 @@ from menu_fetcher import (
     format_week_menu_discord,
     get_day_menus_with_meta,
     get_day_menu_with_meta,
-    has_any_menu_cards,
     remaining_weekdays,
 )
 
@@ -109,6 +108,14 @@ def decide_message_type(cards: list, meta: ScrapeMeta) -> str:
     return 'fallback_parse_failure'
 
 
+def has_any_real_food(day_menus: list[DayMenu]) -> bool:
+    return any(
+        card.title.lower() not in HOLIDAY_TITLES
+        for dm in day_menus
+        for card in dm.cards
+    )
+
+
 def fetch_week_day_menus(today: date, today_menu: DayMenu, menu_url: str) -> list[DayMenu] | None:
     week_dates = remaining_weekdays(today)
     if not week_dates:
@@ -128,7 +135,7 @@ def fetch_week_day_menus(today: date, today_menu: DayMenu, menu_url: str) -> lis
             )
             for d in remaining_dates
         )
-    return day_menus if has_any_menu_cards(day_menus) else None
+    return day_menus if has_any_real_food(day_menus) else None
 
 
 def main() -> int:
@@ -168,8 +175,44 @@ def main() -> int:
         return 0
 
     message_type = decide_message_type(menu.cards, meta)
-    if message_type in ('skip_no_menu', 'skip_holiday'):
+
+    if message_type == 'skip_no_menu':
         print(f"OUTCOME type={message_type} target_date={today.isoformat()} parsed_cards={len(menu.cards)} section_extracted={meta.section_extracted}")
+        return 0
+
+    # Monday weekly preview — attempt even when Monday itself is a holiday.
+    if today.weekday() == 0:
+        if message_type == 'real':
+            monday_for_preview = menu
+        elif message_type == 'skip_holiday':
+            # Represent closed Monday with empty cards so Tue–Fri can still be shown.
+            monday_for_preview = DayMenu(
+                target_date=menu.target_date,
+                weekday_name=menu.weekday_name,
+                cards=[],
+                raw_section=[],
+            )
+        else:
+            monday_for_preview = None
+
+        if monday_for_preview is not None:
+            week_day_menus = fetch_week_day_menus(today, monday_for_preview, menu_url)
+            if week_day_menus:
+                if use_telegram:
+                    telegram_api('sendMessage', json_body={
+                        'chat_id': str(TELEGRAM_CHAT_ID),
+                        'text': format_week_menu(week_day_menus, menu_url),
+                        'parse_mode': 'HTML',
+                        'disable_web_page_preview': True,
+                    })
+                if use_discord:
+                    discord_webhook_send(format_week_menu_discord(week_day_menus, menu_url))
+                print(f"OUTCOME type=weekly_preview target_date={today.isoformat()}")
+            else:
+                print(f"OUTCOME type=skip_weekly_preview target_date={today.isoformat()}")
+
+    if message_type == 'skip_holiday':
+        print(f"OUTCOME type=skip_holiday target_date={today.isoformat()} parsed_cards={len(menu.cards)} section_extracted={meta.section_extracted}")
         return 0
 
     label = today.strftime('%A')
@@ -179,22 +222,6 @@ def main() -> int:
     else:
         tg_text = format_day_menu(menu, label, menu_url, hall_name=campuses_display)
         dc_payload = format_day_menu_discord(menu, label, menu_url, hall_name=campuses_display)
-
-    if today.weekday() == 0 and message_type == 'real':
-        week_day_menus = fetch_week_day_menus(today, menu, menu_url)
-        if week_day_menus:
-            if use_telegram:
-                telegram_api('sendMessage', json_body={
-                    'chat_id': str(TELEGRAM_CHAT_ID),
-                    'text': format_week_menu(week_day_menus, menu_url),
-                    'parse_mode': 'HTML',
-                    'disable_web_page_preview': True,
-                })
-            if use_discord:
-                discord_webhook_send(format_week_menu_discord(week_day_menus, menu_url))
-            print(f"OUTCOME type=weekly_preview target_date={today.isoformat()}")
-        else:
-            print(f"OUTCOME type=skip_weekly_preview target_date={today.isoformat()}")
 
     if use_telegram:
         telegram_api('sendMessage', json_body={
